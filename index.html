@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PFG Market Watch</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #1E2124; }
+  * { box-sizing: border-box; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+
+const { useState, useEffect, useCallback, useRef } = React;
+
+const PALETTE = {
+  charcoal: "#1E2124",
+  navy: "#1B2A47",
+  gold: "#C6A15B",
+  tan: "#D9C9A3",
+  cream: "#F5F1E6",
+  brick: "#A23B3B",
+};
+
+const TWELVE_DATA_API_KEY = "29323895c3884f7aa1c76b42072364e0";
+
+const DEFAULT_SP500 = {
+  id: "sp500",
+  symbol: "GSPC",
+  label: "S&P 500 Index",
+  pinned: true,
+  currentPrice: null,
+  referencePrice: null,
+  percentEnabled: true,
+  percentValue: 5,
+  percentDirection: "drop",
+  priceEnabled: false,
+  priceValue: "",
+  priceDirection: "below",
+  lastUpdated: null,
+  fetchStatus: "manual",
+};
+
+function emptyStock() {
+  return {
+    id: `s_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    symbol: "",
+    label: "",
+    pinned: false,
+    currentPrice: null,
+    referencePrice: null,
+    percentEnabled: true,
+    percentValue: 5,
+    percentDirection: "drop",
+    priceEnabled: true,
+    priceValue: "",
+    priceDirection: "below",
+    lastUpdated: null,
+    fetchStatus: "manual",
+  };
+}
+
+async function tryFetchPrice(symbol) {
+  try {
+    const res = await fetch(
+      `https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbol)}&apikey=${TWELVE_DATA_API_KEY}`
+    );
+    if (!res.ok) throw new Error("bad response");
+    const data = await res.json();
+    if (data.status === "error" || !data.price) throw new Error(data.message || "no price");
+    const price = parseFloat(data.price);
+    if (isNaN(price)) throw new Error("unparseable price");
+    return { price, ok: true };
+  } catch (e) {
+    return { price: null, ok: false };
+  }
+}
+
+function isTriggered(item) {
+  const reasons = [];
+  if (item.currentPrice == null) return reasons;
+  if (item.percentEnabled && item.referencePrice) {
+    const pct = ((item.currentPrice - item.referencePrice) / item.referencePrice) * 100;
+    if (item.percentDirection === "drop" && pct <= -Math.abs(item.percentValue)) {
+      reasons.push(`down ${Math.abs(pct).toFixed(1)}% from reference`);
+    }
+    if (item.percentDirection === "rise" && pct >= Math.abs(item.percentValue)) {
+      reasons.push(`up ${pct.toFixed(1)}% from reference`);
+    }
+  }
+  if (item.priceEnabled && item.priceValue !== "" && item.priceValue != null) {
+    const target = Number(item.priceValue);
+    if (item.priceDirection === "below" && item.currentPrice <= target) {
+      reasons.push(`at or below $${target}`);
+    }
+    if (item.priceDirection === "above" && item.currentPrice >= target) {
+      reasons.push(`at or above $${target}`);
+    }
+  }
+  return reasons;
+}
+
+function fmt(n) {
+  if (n == null || isNaN(n)) return "—";
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+async function loadBoard() {
+  try {
+    const res = await fetch("/.netlify/functions/board");
+    const data = await res.json();
+    return data;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function saveBoard(items) {
+  try {
+    const res = await fetch("/.netlify/functions/board", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(items),
+    });
+    return res.ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+function App() {
+  const [items, setItems] = useState([DEFAULT_SP500]);
+  const [saveError, setSaveError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newSymbol, setNewSymbol] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+  const saveTimer = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      const board = await loadBoard();
+      if (Array.isArray(board) && board.length) setItems(board);
+    })();
+  }, []);
+
+  const persist = useCallback((next) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      const ok = await saveBoard(next);
+      setSaveError(!ok);
+    }, 400);
+  }, []);
+
+  const updateItems = (next) => {
+    setItems(next);
+    persist(next);
+  };
+
+  const updateItem = (id, patch) => {
+    updateItems(items.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+  };
+
+  const removeItem = (id) => {
+    updateItems(items.filter((it) => it.id !== id));
+  };
+
+  const refreshOne = async (id) => {
+    const item = items.find((it) => it.id === id);
+    if (!item) return;
+    const { price, ok } = await tryFetchPrice(item.symbol);
+    if (ok) {
+      updateItem(id, {
+        currentPrice: price,
+        referencePrice: item.referencePrice == null ? price : item.referencePrice,
+        lastUpdated: new Date().toISOString(),
+        fetchStatus: "ok",
+      });
+    } else {
+      updateItem(id, { fetchStatus: "error" });
+    }
+  };
+
+  const refreshAll = async () => {
+    setRefreshing(true);
+    const results = await Promise.all(
+      items.map(async (item) => {
+        const { price, ok } = await tryFetchPrice(item.symbol);
+        if (ok) {
+          return {
+            ...item,
+            currentPrice: price,
+            referencePrice: item.referencePrice == null ? price : item.referencePrice,
+            lastUpdated: new Date().toISOString(),
+            fetchStatus: "ok",
+          };
+        }
+        return { ...item, fetchStatus: "error" };
+      })
+    );
+    updateItems(results);
+    setRefreshing(false);
+  };
+
+  const addStock = () => {
+    if (!newSymbol.trim()) return;
+    const item = emptyStock();
+    item.symbol = newSymbol.trim().toUpperCase();
+    item.label = newLabel.trim();
+    updateItems([...items, item]);
+    setNewSymbol("");
+    setNewLabel("");
+    setShowAdd(false);
+    refreshOne(item.id);
+  };
+
+  const alerts = items.map((it) => ({ item: it, reasons: isTriggered(it) })).filter((a) => a.reasons.length > 0);
+
+  return (
+    <div className="board">
+      <style>{`
+        .board { background: ${PALETTE.charcoal}; color: ${PALETTE.cream}; font-family: -apple-system, "Segoe UI", sans-serif; min-height: 100vh; padding: 28px 24px 60px; }
+        .display { font-family: Georgia, "Iowan Old Style", serif; }
+        .mono { font-family: "SF Mono", "IBM Plex Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+        .header-row { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 1px solid rgba(198,161,91,0.35); padding-bottom: 14px; margin-bottom: 18px; flex-wrap: wrap; gap: 12px; }
+        .eyebrow { text-transform: uppercase; letter-spacing: 0.14em; font-size: 11px; color: ${PALETTE.tan}; margin: 0 0 4px; }
+        .title { font-size: 26px; margin: 0; color: ${PALETTE.cream}; }
+        .btn { background: transparent; border: 1px solid rgba(198,161,91,0.5); color: ${PALETTE.gold}; padding: 8px 14px; border-radius: 3px; font-size: 13px; cursor: pointer; }
+        .btn:hover { background: rgba(198,161,91,0.1); }
+        .btn:disabled { opacity: 0.5; cursor: default; }
+        .btn-solid { background: ${PALETTE.gold}; color: ${PALETTE.charcoal}; border: 1px solid ${PALETTE.gold}; font-weight: 600; }
+        .btn-solid:hover { background: #d6b273; }
+        .ticker { border: 1px solid rgba(162,59,59,0.5); background: rgba(162,59,59,0.12); border-radius: 4px; padding: 10px 14px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 6px; }
+        .ticker-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+        .pulse { width: 7px; height: 7px; border-radius: 50%; background: ${PALETTE.brick}; animation: pulse 1.8s infinite; flex-shrink: 0; }
+        @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(162,59,59,0.6); } 70% { box-shadow: 0 0 0 7px rgba(162,59,59,0); } 100% { box-shadow: 0 0 0 0 rgba(162,59,59,0); } }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+        .card { border: 1px solid rgba(217,201,163,0.25); background: rgba(255,255,255,0.02); border-radius: 4px; padding: 16px; }
+        .card.pinned { border-color: rgba(198,161,91,0.5); background: rgba(198,161,91,0.05); }
+        .card.triggered { border-color: ${PALETTE.brick}; background: rgba(162,59,59,0.08); }
+        .card-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+        .symbol { font-size: 18px; font-weight: 700; letter-spacing: 0.02em; }
+        .label { font-size: 12px; color: ${PALETTE.tan}; margin-top: 2px; }
+        .price-row { display: flex; align-items: baseline; gap: 10px; margin: 10px 0 6px; }
+        .price { font-size: 24px; }
+        .updated { font-size: 10px; color: rgba(245,241,230,0.45); }
+        .divider { height: 1px; background: rgba(217,201,163,0.15); margin: 10px 0; }
+        .field-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 12px; }
+        .field-row label { flex-shrink: 0; color: ${PALETTE.tan}; width: 78px; }
+        input, select { background: rgba(255,255,255,0.04); border: 1px solid rgba(217,201,163,0.3); color: ${PALETTE.cream}; border-radius: 3px; padding: 4px 6px; font-size: 12px; width: 100%; }
+        input[type="checkbox"] { width: auto; }
+        select { cursor: pointer; }
+        .icon-btn { background: none; border: none; color: rgba(245,241,230,0.4); cursor: pointer; padding: 2px; font-size: 14px; }
+        .icon-btn:hover { color: ${PALETTE.brick}; }
+        .reason-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: ${PALETTE.brick}; background: rgba(162,59,59,0.15); border-radius: 3px; padding: 3px 6px; margin-top: 6px; }
+        .add-card { border: 1px dashed rgba(217,201,163,0.35); border-radius: 4px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+        .note { font-size: 11px; color: rgba(245,241,230,0.4); margin-top: 24px; border-top: 1px solid rgba(217,201,163,0.15); padding-top: 10px; }
+      `}</style>
+
+      <div className="header-row">
+        <div>
+          <p className="eyebrow">PFG Advisors · Internal</p>
+          <h1 className="title display">Market Watch</h1>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn" onClick={() => setShowAdd((s) => !s)}>+ Add symbol</button>
+          <button className="btn btn-solid" onClick={refreshAll} disabled={refreshing}>
+            {refreshing ? "Refreshing…" : "⟳ Refresh all"}
+          </button>
+        </div>
+      </div>
+
+      {alerts.length > 0 && (
+        <div className="ticker">
+          {alerts.map(({ item, reasons }) => (
+            <div className="ticker-row" key={item.id}>
+              <span className="pulse" />
+              <strong>{item.symbol}</strong>
+              <span style={{ color: PALETTE.tan }}>{item.label}</span>
+              <span>— {reasons.join(", ")}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showAdd && (
+        <div className="add-card" style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input placeholder="Ticker (e.g. AAPL)" value={newSymbol} onChange={(e) => setNewSymbol(e.target.value)} style={{ maxWidth: 140 }} />
+            <input placeholder="Note / CRM code (no client names)" value={newLabel} onChange={(e) => setNewLabel(e.target.value)} style={{ maxWidth: 240 }} />
+            <button className="btn btn-solid" onClick={addStock}>Add</button>
+          </div>
+        </div>
+      )}
+
+      <div className="grid">
+        {items.map((item) => {
+          const reasons = isTriggered(item);
+          const triggered = reasons.length > 0;
+          return (
+            <div key={item.id} className={`card ${item.pinned ? "pinned" : ""} ${triggered ? "triggered" : ""}`}>
+              <div className="card-top">
+                <div>
+                  <div className="symbol">{item.symbol}</div>
+                  <div className="label">{item.label || (item.pinned ? "Benchmark" : "—")}</div>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button className="icon-btn" onClick={() => refreshOne(item.id)} title="Refresh price">⟳</button>
+                  {!item.pinned && (
+                    <button className="icon-btn" onClick={() => removeItem(item.id)} title="Remove">✕</button>
+                  )}
+                </div>
+              </div>
+
+              <div className="price-row">
+                <span className="price mono">{item.currentPrice != null ? `$${fmt(item.currentPrice)}` : "—"}</span>
+                {item.fetchStatus === "error" && (
+                  <span style={{ fontSize: 11, color: PALETTE.tan }}>auto-fetch failed — enter manually</span>
+                )}
+              </div>
+              <input
+                type="number"
+                placeholder="Enter current price manually"
+                value={item.currentPrice ?? ""}
+                onChange={(e) =>
+                  updateItem(item.id, {
+                    currentPrice: e.target.value === "" ? null : Number(e.target.value),
+                    lastUpdated: new Date().toISOString(),
+                    fetchStatus: "manual",
+                  })
+                }
+                style={{ marginBottom: 4 }}
+              />
+              <div className="updated">
+                {item.lastUpdated ? `Updated ${new Date(item.lastUpdated).toLocaleString()}` : "Never updated"}
+              </div>
+
+              <div className="divider" />
+
+              <div className="field-row">
+                <label>Reference</label>
+                <input
+                  type="number"
+                  placeholder="baseline price"
+                  value={item.referencePrice ?? ""}
+                  onChange={(e) => updateItem(item.id, { referencePrice: e.target.value === "" ? null : Number(e.target.value) })}
+                />
+              </div>
+
+              <div className="field-row">
+                <input type="checkbox" checked={item.percentEnabled} onChange={(e) => updateItem(item.id, { percentEnabled: e.target.checked })} style={{ width: 14 }} />
+                <label style={{ width: "auto" }}>Alert on</label>
+                <select value={item.percentDirection} onChange={(e) => updateItem(item.id, { percentDirection: e.target.value })} style={{ width: 60 }}>
+                  <option value="drop">drop</option>
+                  <option value="rise">rise</option>
+                </select>
+                <input type="number" value={item.percentValue} onChange={(e) => updateItem(item.id, { percentValue: Number(e.target.value) })} style={{ width: 50 }} />
+                <span>%</span>
+              </div>
+
+              <div className="field-row">
+                <input type="checkbox" checked={item.priceEnabled} onChange={(e) => updateItem(item.id, { priceEnabled: e.target.checked })} style={{ width: 14 }} />
+                <label style={{ width: "auto" }}>Alert at</label>
+                <select value={item.priceDirection} onChange={(e) => updateItem(item.id, { priceDirection: e.target.value })} style={{ width: 70 }}>
+                  <option value="below">at/below</option>
+                  <option value="above">at/above</option>
+                </select>
+                <span>$</span>
+                <input type="number" value={item.priceValue} onChange={(e) => updateItem(item.id, { priceValue: e.target.value })} style={{ width: 70 }} />
+              </div>
+
+              {triggered && <div className="reason-tag">⚠ {reasons.join(" · ")}</div>}
+            </div>
+          );
+        })}
+      </div>
+
+      <p className="note">
+        This board saves to shared storage on your Netlify site — anyone with the site link sees and can edit the
+        same list. Prices come from Twelve Data's free tier (8 calls/minute, 800/day). Alerts only appear while
+        this page is open in a tab — for a true phone push, use TradingView or your brokerage app's native alerts
+        alongside this dashboard. Use notes/labels for CRM codes only, not client names.
+        {saveError && " (Note: the last save to shared storage failed — check your connection and try again.)"}
+      </p>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
