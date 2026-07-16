@@ -27,8 +27,6 @@ const PALETTE = {
   brick: "#A23B3B",
 };
 
-const TWELVE_DATA_API_KEY = "29323895c3884f7aa1c76b42072364e0";
-
 const DEFAULT_SP500 = {
   id: "sp500",
   symbol: "GSPC",
@@ -67,15 +65,10 @@ function emptyStock() {
 
 async function tryFetchPrice(symbol) {
   try {
-    const res = await fetch(
-      `https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbol)}&apikey=${TWELVE_DATA_API_KEY}`
-    );
-    if (!res.ok) throw new Error("bad response");
+    const res = await fetch(`/.netlify/functions/price?symbol=${encodeURIComponent(symbol)}`);
     const data = await res.json();
-    if (data.status === "error" || !data.price) throw new Error(data.message || "no price");
-    const price = parseFloat(data.price);
-    if (isNaN(price)) throw new Error("unparseable price");
-    return { price, ok: true };
+    if (!data.ok) throw new Error(data.error || "fetch failed");
+    return { price: data.price, ok: true };
   } catch (e) {
     return { price: null, ok: false };
   }
