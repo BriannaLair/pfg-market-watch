@@ -92,7 +92,7 @@ export default async () => {
       await transporter.sendMail({
         from: gmailUser,
         to: notifyTo,
-        subject: `Market Watch: ${alertsToSend.length} trigger${alertsToSend.length > 1 ? "s" : ""} hit`,
+        subject: `[Do Not Reply] Market Watch: ${alertsToSend.length} trigger${alertsToSend.length > 1 ? "s" : ""} hit`,
         text: `The following alerts triggered on your Market Watch dashboard:\n\n${lines}`,
       });
     }
